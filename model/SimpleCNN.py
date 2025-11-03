@@ -2,44 +2,8 @@ import torch
 import torch.nn as nn
 
 class SimpleCNN(nn.Module):
-    def __init__(self, num_classes=10, hidden_size=4096):
+    def __init__(self, num_classes=10, hidden_size=1536):
         super(SimpleCNN, self).__init__()
-
-        # Feature Extractor
-        self.features = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=5, stride=1, padding=0), # 32 to 28
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 28 to 13
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1), # 13 to 13
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 13 to 6
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=0), # 6 to 4
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-
-        # Classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 4 * 4, hidden_size),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, num_classes)
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
-
-class SimpleCNN224(nn.Module):
-    def __init__(self, num_classes=10, hidden_size=4096):
-        super(SimpleCNN224, self).__init__()
 
         # Feature Extractor
         self.features = nn.Sequential(
@@ -59,6 +23,42 @@ class SimpleCNN224(nn.Module):
         # Classifier
         self.classifier = nn.Sequential(
             nn.Linear(64 * 14 * 14, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+class SimpleCNN32(nn.Module):
+    def __init__(self, num_classes=10, hidden_size=1024):
+        super(SimpleCNN32, self).__init__()
+
+        # Feature Extractor
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=5, stride=1, padding=0), # 32 to 28
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 28 to 13
+            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1), # 13 to 13
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 13 to 6
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=0), # 6 to 4
+            nn.BatchNorm2d(128),
+            nn.ReLU()
+        )
+
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(128 * 4 * 4, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
