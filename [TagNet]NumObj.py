@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,7 +9,7 @@ from dataloader.data_loader import data_loader
 import math
 import wandb
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def get_label_partition_log_data(label_partition_counts, domain_name, num_classes, num_partition, prefix):
     log_data = {}
@@ -31,8 +32,8 @@ def get_label_partition_log_data(label_partition_counts, domain_name, num_classe
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epoch', type=int, default=1000)
-    parser.add_argument('--batch_size', type=int, default=500)
+    parser.add_argument('--epoch', type=int, default=500)
+    parser.add_argument('--batch_size', type=int, default=200)
     parser.add_argument('--num_partition', type=int, default=2)
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_domains', type=int, default=2)
@@ -54,8 +55,8 @@ def main():
     # parameter lr amplifier
     parser.add_argument('--prefc_lr', type=float, default=1.0)
     parser.add_argument('--fc_lr', type=float, default=1.0)
-    parser.add_argument('--disc_lr', type=float, default=0.1)
-    parser.add_argument('--switcher_lr', type=float, default=0.05)
+    parser.add_argument('--disc_lr', type=float, default=0.2)
+    parser.add_argument('--switcher_lr', type=float, default=0.2)
 
     # regularization
     parser.add_argument('--reg_alpha', type=float, default=0.2)
@@ -94,6 +95,12 @@ def main():
                      num_domains=args.num_domains,
                      device=device
                      )
+
+    save_dir = f"./checkpoints/{wandb.run.name}"
+    os.makedirs(save_dir, exist_ok=True)
+    best_avg_acc = 0.0
+    save_interval = 50
+    min_save_epoch = 150
 
     # def lr_lambda(progress):
     #     alpha = args.lr_alpha
@@ -566,10 +573,24 @@ def main():
             test_cifar_acc_epoch = test_total_cifar_correct / test_total_samples * 100
             test_stl_acc_epoch = test_total_stl_correct / test_total_samples * 100
 
+            current_avg_acc = (test_mnist_acc_epoch + test_svhn_acc_epoch + test_cifar_acc_epoch + test_stl_acc_epoch) / 4.0
+
             test_mnist_domain_acc_epoch = test_total_mnist_domain_correct / test_total_samples * 100
             test_svhn_domain_acc_epoch = test_total_svhn_domain_correct / test_total_samples * 100
             test_cifar_domain_acc_epoch = test_total_cifar_domain_correct / test_total_samples * 100
             test_stl_domain_acc_epoch = test_total_stl_domain_correct / test_total_samples * 100
+
+            if (epoch + 1) >= min_save_epoch and current_avg_acc > best_avg_acc:
+                best_avg_acc = current_avg_acc
+                save_path = os.path.join(save_dir, "best_model.pt")
+                torch.save(model.state_dict(), save_path)
+                print(f"*** New best model saved to {save_path} (Epoch: {epoch + 1}, Avg Acc: {current_avg_acc:.2f}%) ***")
+
+
+            if (epoch + 1) % save_interval == 0:
+                periodic_save_path = os.path.join(save_dir, f"checkpoint_epoch_{epoch + 1}.pt")
+                torch.save(model.state_dict(), periodic_save_path)
+                print(f"--- Periodic checkpoint saved to {periodic_save_path} ---")
 
             print(f'Epoch [{epoch + 1}/{num_epochs}] (Test)')
             print(f'  [Ratios] MNIST: [{test_mnist_partition_ratio_str}] | SVHN: [{test_svhn_partition_ratio_str}] | CIFAR: [{test_cifar_partition_ratio_str}] | STL: [{test_stl_partition_ratio_str}]')  # --- [MODIFIED] ---

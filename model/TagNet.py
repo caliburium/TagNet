@@ -163,21 +163,14 @@ class TagNet32(nn.Module):
         self.disc_hidden = 3 * num_classes * num_domains * n_partition
 
         self.features = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=5, stride=1, padding=0), # 32 to 28
-            nn.BatchNorm2d(64),
+            nn.Conv2d(in_channels=3, out_channels=24, kernel_size=3, stride=2, padding=0), # 32 to 15
+            nn.BatchNorm2d(24),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 28 to 13
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1), # 13 to 13
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 13 to 6
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=0), # 6 to 4
-            nn.BatchNorm2d(128),
-            nn.ReLU()
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 15 to 7
         )
 
         self.pre_classifier = nn.Sequential(
-            nn.Linear(128 * 4 * 4, pre_classifier_out),
+            nn.Linear(24 * 7 * 7, pre_classifier_out),
             nn.LayerNorm(pre_classifier_out),
             nn.ReLU(),
         )
@@ -203,7 +196,7 @@ class TagNet32(nn.Module):
         self.sync_classifier_with_subnetworks()
         self.to(self.device)
 
-    # Method to partition the classifier into sub-networks
+
     def create_partitioned_classifier(self):
         self.partitioned_classifier = nn.ModuleList()
 
