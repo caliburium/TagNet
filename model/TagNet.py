@@ -170,7 +170,7 @@ class TagNet32(nn.Module):
         )
 
         self.pre_classifier = nn.Sequential(
-            nn.Linear(24 * 7 * 7, pre_classifier_out),
+            nn.Linear(3 * 32 * 32, pre_classifier_out),
             nn.LayerNorm(pre_classifier_out),
             nn.ReLU(),
         )
@@ -258,7 +258,8 @@ class TagNet32(nn.Module):
                         linear_layer.bias.copy_(bs_cat)
 
     def forward(self, input_data, alpha=1.0, tau=0.1, inference=False):
-        feature = self.features(input_data)
+        # feature = self.features(input_data)
+        feature = input_data
         feature = feature.view(feature.size(0), -1)
         feature = self.pre_classifier(feature)
 

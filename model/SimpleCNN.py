@@ -51,7 +51,7 @@ class SimpleCNN32(nn.Module):
 
         # Classifier
         self.classifier = nn.Sequential(
-            nn.Linear(24 * 7 * 7, hidden_size),
+            nn.Linear(3 * 32 * 32, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
@@ -61,7 +61,7 @@ class SimpleCNN32(nn.Module):
         )
 
     def forward(self, x):
-        x = self.features(x)
+        # x = self.features(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x

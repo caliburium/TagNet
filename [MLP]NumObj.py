@@ -2,10 +2,27 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from model.SimpleCNN import SimpleCNN32
 from dataloader.data_loader import data_loader
 import wandb
 import os
+
+class MLP(nn.Module):
+    def __init__(self, num_classes=10, hidden_size=1024):
+        super(MLP, self).__init__()
+        self.classifier = nn.Sequential(
+            nn.Linear(3 * 32 * 32, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, num_classes)
+        )
+
+    def forward(self, x):
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,7 +44,7 @@ def main():
     wandb_run = wandb.init(entity="hails",
                            project="TagNet - NumObj",
                            config=args.__dict__,
-                           name="[CNN]NumObj_lr:" + str(args.lr)
+                           name="[MLP]NumObj_lr:" + str(args.lr)
                                 + "_Batch:" + str(args.batch_size)
                                 + "_Hidden:" + str(args.hidden_size)
                            )
@@ -45,9 +62,7 @@ def main():
 
     print("Data load complete, start training")
 
-    model = SimpleCNN32(num_classes=args.num_classes,
-                        hidden_size=args.hidden_size,
-                        ).to(device)
+    model = MLP(num_classes=args.num_classes, hidden_size=args.hidden_size).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.opt_decay)
 
