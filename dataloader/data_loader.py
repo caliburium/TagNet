@@ -92,6 +92,7 @@ def data_loader(source, batch_size):
     elif source == 'CIFAR10':
         dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
         dataset_test = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
     elif source == 'STL10':
         dataset = STL10Mapped(root='./data', split='train', download=True, transform=transform_stl10)
         dataset_test = STL10Mapped(root='./data', split='test', download=True, transform=transform_stl10)

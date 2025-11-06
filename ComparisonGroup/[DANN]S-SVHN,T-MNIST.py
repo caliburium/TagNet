@@ -16,12 +16,12 @@ def main():
     parser.add_argument('--epoch', type=int, default=100)
     # parser.add_argument('--pre_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
     parser.add_argument('--feature_lr', type=float, default=1.0)
     parser.add_argument('--fc_lr', type=float, default=1.0)
-    parser.add_argument('--disc_lr', type=float, default=1.0)
+    parser.add_argument('--disc_lr', type=float, default=0.1)
 
     args = parser.parse_args()
     num_epochs = args.epoch
@@ -29,16 +29,13 @@ def main():
 
     # Initialize Weights and Biases
     wandb.init(entity="hails",
-               project="TagNet - MSC",
+               project="Adversarial Training is Shit",
                config=args.__dict__,
-               name="[DANN]S:SVHN/T:MNIST_512/64"
-                    + "_lr:" + str(args.lr) + "_Batch:" + str(args.batch_size)
-                    + "_epoch:" + str(args.epoch)
-                    # + "_fc:" + str(args.fc_lr) + "_disc:" + str(args.disc_lr)
+               name="[DANN]S:SVHN/T:MNIST_1024/128 -> Fucking Black&White Version"
                )
 
-    mnist_loader, mnist_loader_test = data_loader('MNIST', args.batch_size)
-    svhn_loader, svhn_loader_test = data_loader('SVHN', args.batch_size)
+    mnist_loader, mnist_loader_test = data_loader('MNIST_RS', args.batch_size)
+    svhn_loader, svhn_loader_test = data_loader('SVHN_BW', args.batch_size)
 
     print("Data load complete, start training")
 
@@ -106,8 +103,8 @@ def main():
 
         for i, (mnist_data, svhn_data) in enumerate(zip(mnist_loader, svhn_loader)):
             p = epoch / num_epochs
-            lambda_p = 2. / (1. + np.exp(-10 * p)) - 1
-            # lambda_p = 0.01
+            # lambda_p = 2. / (1. + np.exp(-5 * p)) - 1
+            lambda_p = 10
 
             mnist_images, mnist_labels = mnist_data
             mnist_images, mnist_labels = mnist_images.to(device), mnist_labels.to(device)

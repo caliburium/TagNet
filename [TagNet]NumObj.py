@@ -59,7 +59,7 @@ def main():
     # regularization
     parser.add_argument('--reg_alpha', type=float, default=0.2)
     parser.add_argument('--reg_beta', type=float, default=1.0)
-    parser.add_argument('--lambda_p', type=float, default=5e-2)
+    parser.add_argument('--lambda_p', type=float, default=-1)
 
     args = parser.parse_args()
     init_lambda = args.lambda_p
@@ -76,6 +76,7 @@ def main():
                                 + "_lr(d)" + str(args.disc_lr)
                                 + "_lr(s)" + str(args.switcher_lr)
                                 + "_lambda_p:" + str(args.lambda_p)
+                                + "_Test"
                            )
 
     mnist_loader, mnist_loader_test = data_loader('MNIST', args.batch_size)
@@ -118,6 +119,7 @@ def main():
         phi = (1 + math.sqrt(5)) / 2
         lambda_p = init_lambda / phi ** (epoch / 50)
         tau = tau_scheduler.get_tau()
+        # lambda_p = init_lambda
 
         total_mnist_domain_loss, total_mnist_domain_correct, total_mnist_loss, total_mnist_correct = 0, 0, 0, 0
         total_svhn_domain_loss, total_svhn_domain_correct, total_svhn_loss, total_svhn_correct = 0, 0, 0, 0
@@ -157,8 +159,7 @@ def main():
 
             optimizer.zero_grad()
 
-            bs_m, bs_s, bs_c, bs_stl = mnist_images.size(0), svhn_images.size(0), cifar_images.size(0), stl_images.size(
-                0)
+            bs_m, bs_s, bs_c, bs_stl = mnist_images.size(0), svhn_images.size(0), cifar_images.size(0), stl_images.size(0)
             all_images = torch.cat((mnist_images, svhn_images, cifar_images, stl_images), dim=0)
 
             out_part, domain_out, part_idx, part_gumbel = model(all_images, alpha=lambda_p, tau=tau, inference=False)
@@ -189,10 +190,8 @@ def main():
                 svhn_counts = torch.bincount(svhn_part_idx, minlength=args.num_partition)
                 cifar_counts = torch.bincount(cifar_part_idx, minlength=args.num_partition)
                 stl_counts = torch.bincount(stl_part_idx, minlength=args.num_partition)
-                print(
-                    f"MNIST : {mnist_counts.cpu().numpy()} / SVHN  : {svhn_counts.cpu().numpy()} / CIFAR : {cifar_counts.cpu().numpy()} / STL : {stl_counts.cpu().numpy()}")
-                print(
-                    f"Switcher Weight Mean: {model.partition_switcher.weight.data.mean():.8f}, Bias Mean: {model.partition_switcher.bias.data.mean():.8f}")
+                print(f"MNIST : {mnist_counts.cpu().numpy()} / SVHN  : {svhn_counts.cpu().numpy()} / CIFAR : {cifar_counts.cpu().numpy()} / STL : {stl_counts.cpu().numpy()}")
+                print(f"Switcher Weight Mean: {model.partition_switcher.weight.data.mean():.8f}, Bias Mean: {model.partition_switcher.bias.data.mean():.8f}")
 
             for l_idx in range(mnist_labels.size(0)):
                 label_val = mnist_labels[l_idx].item()
@@ -216,30 +215,24 @@ def main():
             cifar_label_loss = criterion(cifar_out_part, cifar_labels)
             stl_label_loss = criterion(stl_out_part, stl_labels)
 
+            label_loss = mnist_label_loss + svhn_label_loss + cifar_label_loss + stl_label_loss
+
             numbers_part_gumbel = torch.cat((mnist_part_gumbel, svhn_part_gumbel))
             objects_part_gumbel = torch.cat((cifar_part_gumbel, stl_part_gumbel))
-
-            avg_prob_numbers = torch.mean(numbers_part_gumbel, dim=0)
-            avg_prob_objects = torch.mean(objects_part_gumbel, dim=0)
-
-            loss_specialization_numbers = -torch.sum(avg_prob_numbers * torch.log(avg_prob_numbers + 1e-8))
-            loss_specialization_objects = -torch.sum(avg_prob_objects * torch.log(avg_prob_objects + 1e-8))
+            loss_specialization_numbers = -torch.sum(numbers_part_gumbel * torch.log(numbers_part_gumbel + 1e-8))
+            loss_specialization_objects = -torch.sum(objects_part_gumbel * torch.log(objects_part_gumbel + 1e-8))
             loss_specialization = loss_specialization_numbers + loss_specialization_objects
-            all_probs = torch.cat((numbers_part_gumbel, objects_part_gumbel), dim=0)
-            avg_prob_global = torch.mean(all_probs, dim=0)
+            all_probs = torch.cat((mnist_part_gumbel, svhn_part_gumbel, cifar_part_gumbel, stl_part_gumbel), dim=0)
+            loss_diversity = torch.sum(all_probs * torch.log(all_probs + 1e-8))
+            gumbel_loss = args.reg_alpha * loss_specialization + args.reg_beta * loss_diversity
 
-            loss_diversity = torch.sum(avg_prob_global * torch.log(avg_prob_global + 1e-8))
-
-            label_loss = ((mnist_label_loss + svhn_label_loss) / 2 + (cifar_label_loss + stl_label_loss) / 2
-                          + args.reg_alpha * loss_specialization + args.reg_beta * loss_diversity)
             mnist_domain_loss = domain_criterion(mnist_domain_out, mnist_dlabels)
             svhn_domain_loss = domain_criterion(svhn_domain_out, svhn_dlabels)
             cifar_domain_loss = domain_criterion(cifar_domain_out, cifar_dlabels)
             stl_domain_loss = domain_criterion(stl_domain_out, stl_dlabels)
+            domain_loss = mnist_domain_loss + svhn_domain_loss + cifar_domain_loss + stl_domain_loss
 
-            domain_loss = (mnist_domain_loss + svhn_domain_loss) / 2 + (cifar_domain_loss + stl_domain_loss) / 2
-
-            loss = label_loss + domain_loss
+            loss = label_loss + gumbel_loss + domain_loss
             loss.backward()
 
             entries = []
@@ -260,7 +253,7 @@ def main():
             cifar_partition_counts += torch.bincount(cifar_part_idx, minlength=args.num_partition).to(device)
             stl_partition_counts += torch.bincount(stl_part_idx, minlength=args.num_partition).to(device)
 
-            total_label_loss += label_loss.item() * (bs_m + bs_s + bs_c + bs_stl)  # °¡Áß Æò±ÕÀ» À§ÇØ ¹èÄ¡ Å©±â °öÇÔ
+            total_label_loss += label_loss.item() * (bs_m + bs_s + bs_c + bs_stl)
             total_mnist_loss += mnist_label_loss.item() * bs_m
             total_svhn_loss += svhn_label_loss.item() * bs_s
             total_cifar_loss += cifar_label_loss.item() * bs_c
@@ -352,19 +345,13 @@ def main():
         stl_domain_acc_epoch = total_stl_domain_correct / total_samples_stl * 100
 
         print(f'Epoch [{epoch + 1}/{num_epochs}]')
-        print(
-            f'  [Ratios] MNIST: [{mnist_partition_ratio_str}] | SVHN: [{svhn_partition_ratio_str}] | CIFAR: [{cifar_partition_ratio_str}] | STL: [{stl_partition_ratio_str}]')
-        print(
-            f'  [Acc]    MNIST: {mnist_acc_epoch:<6.2f}% | SVHN: {svhn_acc_epoch:<6.2f}% | CIFAR: {cifar_acc_epoch:<6.2f}% | STL: {stl_acc_epoch:<6.2f}%')
-        print(
-            f'  [DomAcc] MNIST: {mnist_domain_acc_epoch:<6.2f}% | SVHN: {svhn_domain_acc_epoch:<6.2f}% | CIFAR: {cifar_domain_acc_epoch:<6.2f}% | STL: {stl_domain_acc_epoch:<6.2f}%')
+        print(f'  [Ratios] MNIST: [{mnist_partition_ratio_str}] | SVHN: [{svhn_partition_ratio_str}] | CIFAR: [{cifar_partition_ratio_str}] | STL: [{stl_partition_ratio_str}]')
+        print(f'  [Acc]    MNIST: {mnist_acc_epoch:<6.2f}% | SVHN: {svhn_acc_epoch:<6.2f}% | CIFAR: {cifar_acc_epoch:<6.2f}% | STL: {stl_acc_epoch:<6.2f}%')
+        print(f'  [DomAcc] MNIST: {mnist_domain_acc_epoch:<6.2f}% | SVHN: {svhn_domain_acc_epoch:<6.2f}% | CIFAR: {cifar_domain_acc_epoch:<6.2f}% | STL: {stl_domain_acc_epoch:<6.2f}%')
         print(f'  [Reg]    Spec:  {specialization_loss:<8.4f} | Div:    {diversity_loss:<8.4f} | Tau: {tau:<5.3f}')
-        print(
-            f'  [Loss]   Label: {label_avg_loss:<8.4f} | Domain: {domain_avg_loss:<8.4f} | Total: {total_avg_loss:<8.4f}')
-        print(
-            f'  [Label]  MNIST: {mnist_avg_loss:<6.4f} | SVHN: {svhn_avg_loss:<6.4f} | CIFAR: {cifar_avg_loss:<6.4f} | STL: {stl_avg_loss:<6.4f}')
-        print(
-            f'  [Domain] MNIST: {mnist_domain_avg_loss:<6.4f} | SVHN: {svhn_domain_avg_loss:<6.4f} | CIFAR: {cifar_domain_avg_loss:<6.4f} | STL: {stl_domain_avg_loss:<6.4f}')
+        print(f'  [Loss]   Label: {label_avg_loss:<8.4f} | Domain: {domain_avg_loss:<8.4f} | Total: {total_avg_loss:<8.4f}')
+        print(f'  [Label]  MNIST: {mnist_avg_loss:<6.4f} | SVHN: {svhn_avg_loss:<6.4f} | CIFAR: {cifar_avg_loss:<6.4f} | STL: {stl_avg_loss:<6.4f}')
+        print(f'  [Domain] MNIST: {mnist_domain_avg_loss:<6.4f} | SVHN: {svhn_domain_avg_loss:<6.4f} | CIFAR: {cifar_domain_avg_loss:<6.4f} | STL: {stl_domain_avg_loss:<6.4f}')
 
         wandb.log({
             **{f"Train/Partition {p} MNIST Ratio": mnist_partition_ratios[p].item() for p in range(args.num_partition)},
@@ -419,7 +406,7 @@ def main():
                     dlabels = torch.full_like(labels, fill_value=d_label, device=device)
                     bs = images.size(0)
 
-                    out_part, domain_out, part_idx, part_gumbel = model(images, alpha=0, tau=tau, inference=False)
+                    out_part, domain_out, part_idx, part_gumbel = model(images, alpha=0, tau=tau, inference=True)
 
                     gumbel_outputs_list.append(part_gumbel)
 
@@ -461,29 +448,22 @@ def main():
             test_stl_avg_loss, test_stl_dom_avg_loss, test_stl_acc_epoch, test_stl_domain_acc_epoch, test_stl_ratios, test_stl_label_counts, stl_gumbel = evaluate_dataset(
                 stl_loader_test, 1)
 
-            current_avg_acc = (
-                                          test_mnist_acc_epoch + test_svhn_acc_epoch + test_cifar_acc_epoch + test_stl_acc_epoch) / 4.0
-            test_label_avg_loss = (
-                                              test_mnist_avg_loss + test_svhn_avg_loss + test_cifar_avg_loss + test_stl_avg_loss) / 4.0
-            test_domain_avg_loss = (
-                                               test_mnist_dom_avg_loss + test_svhn_dom_avg_loss + test_cifar_dom_avg_loss + test_stl_dom_avg_loss) / 4.0
+            current_avg_acc = (test_mnist_acc_epoch + test_svhn_acc_epoch + test_cifar_acc_epoch + test_stl_acc_epoch) / 4.0
+            test_label_avg_loss = (test_mnist_avg_loss + test_svhn_avg_loss + test_cifar_avg_loss + test_stl_avg_loss) / 4.0
+            test_domain_avg_loss = (test_mnist_dom_avg_loss + test_svhn_dom_avg_loss + test_cifar_dom_avg_loss + test_stl_dom_avg_loss) / 4.0
 
             numbers_part_gumbel = torch.cat((mnist_gumbel, svhn_gumbel), dim=0)
             objects_part_gumbel = torch.cat((cifar_gumbel, stl_gumbel), dim=0)
 
-            avg_prob_numbers = torch.mean(numbers_part_gumbel, dim=0)
-            avg_prob_objects = torch.mean(objects_part_gumbel, dim=0)
-
-            loss_specialization_numbers = -torch.sum(avg_prob_numbers * torch.log(avg_prob_numbers + 1e-8))
-            loss_specialization_objects = -torch.sum(avg_prob_objects * torch.log(avg_prob_objects + 1e-8))
+            loss_specialization_numbers = -torch.sum(numbers_part_gumbel * torch.log(numbers_part_gumbel + 1e-8))
+            loss_specialization_objects = -torch.sum(objects_part_gumbel * torch.log(objects_part_gumbel + 1e-8))
             test_specialization_loss = (loss_specialization_numbers + loss_specialization_objects).item()
 
             all_probs = torch.cat((numbers_part_gumbel, objects_part_gumbel), dim=0)
-            avg_prob_global = torch.mean(all_probs, dim=0)
-            test_diversity_loss = torch.sum(avg_prob_global * torch.log(avg_prob_global + 1e-8)).item()
 
-            test_total_avg_loss = test_label_avg_loss + test_domain_avg_loss + (
-                        args.reg_alpha * test_specialization_loss) + (args.reg_beta * test_diversity_loss)
+            test_diversity_loss = torch.sum(all_probs * torch.log(all_probs + 1e-8)).item()
+
+            test_total_avg_loss = test_label_avg_loss + test_domain_avg_loss + (args.reg_alpha * test_specialization_loss) + (args.reg_beta * test_diversity_loss)
 
             test_mnist_train_partition_log = get_label_partition_log_data(
                 test_mnist_label_counts, 'MNIST', args.num_classes, args.num_partition, prefix="Test"
@@ -517,20 +497,13 @@ def main():
                 print(f"--- Periodic checkpoint saved to {periodic_save_path} ---")
 
             print(f'Epoch [{epoch + 1}/{num_epochs}] (Test)')
-            print(
-                f'  [Ratios] MNIST: [{test_mnist_partition_ratio_str}] | SVHN: [{test_svhn_partition_ratio_str}] | CIFAR: [{test_cifar_partition_ratio_str}] | STL: [{test_stl_partition_ratio_str}]')
-            print(
-                f'  [Acc]    MNIST: {test_mnist_acc_epoch:<6.2f}% | SVHN: {test_svhn_acc_epoch:<6.2f}% | CIFAR: {test_cifar_acc_epoch:<6.2f}% | STL: {test_stl_acc_epoch:<6.2f}%')
-            print(
-                f'  [DomAcc] MNIST: {test_mnist_domain_acc_epoch:<6.2f}% | SVHN: {test_svhn_domain_acc_epoch:<6.2f}% | CIFAR: {test_cifar_domain_acc_epoch:<6.2f}% | STL: {test_stl_domain_acc_epoch:<6.2f}%')
-            print(
-                f'  [Reg]    Spec:  {test_specialization_loss:<8.4f} | Div:    {test_diversity_loss:<8.4f} | Tau: {tau:<5.3f}')
-            print(
-                f'  [Loss]   Label: {test_label_avg_loss:<8.4f} | Domain: {test_domain_avg_loss:<8.4f} | Total: {test_total_avg_loss:<8.4f}')
-            print(
-                f'  [Label]  MNIST: {test_mnist_avg_loss:<6.4f} | SVHN: {test_svhn_avg_loss:<6.4f} | CIFAR: {test_cifar_avg_loss:<6.4f} | STL: {test_stl_avg_loss:<6.4f}')
-            print(
-                f'  [Domain] MNIST: {test_mnist_dom_avg_loss:<6.4f} | SVHN: {test_svhn_dom_avg_loss:<6.4f} | CIFAR: {test_cifar_dom_avg_loss:<6.4f} | STL: {test_stl_dom_avg_loss:<6.4f}')
+            print(f'  [Ratios] MNIST: [{test_mnist_partition_ratio_str}] | SVHN: [{test_svhn_partition_ratio_str}] | CIFAR: [{test_cifar_partition_ratio_str}] | STL: [{test_stl_partition_ratio_str}]')
+            print(f'  [Acc]    MNIST: {test_mnist_acc_epoch:<6.2f}% | SVHN: {test_svhn_acc_epoch:<6.2f}% | CIFAR: {test_cifar_acc_epoch:<6.2f}% | STL: {test_stl_acc_epoch:<6.2f}%')
+            print(f'  [DomAcc] MNIST: {test_mnist_domain_acc_epoch:<6.2f}% | SVHN: {test_svhn_domain_acc_epoch:<6.2f}% | CIFAR: {test_cifar_domain_acc_epoch:<6.2f}% | STL: {test_stl_domain_acc_epoch:<6.2f}%')
+            print(f'  [Reg]    Spec:  {test_specialization_loss:<8.4f} | Div:    {test_diversity_loss:<8.4f} | Tau: {tau:<5.3f}')
+            print(f'  [Loss]   Label: {test_label_avg_loss:<8.4f} | Domain: {test_domain_avg_loss:<8.4f} | Total: {test_total_avg_loss:<8.4f}')
+            print(f'  [Label]  MNIST: {test_mnist_avg_loss:<6.4f} | SVHN: {test_svhn_avg_loss:<6.4f} | CIFAR: {test_cifar_avg_loss:<6.4f} | STL: {test_stl_avg_loss:<6.4f}')
+            print(f'  [Domain] MNIST: {test_mnist_dom_avg_loss:<6.4f} | SVHN: {test_svhn_dom_avg_loss:<6.4f} | CIFAR: {test_cifar_dom_avg_loss:<6.4f} | STL: {test_stl_dom_avg_loss:<6.4f}')
 
             wandb.log({
                 **{f"Test/Partition {p} MNIST Ratio": r.item() for p, r in enumerate(test_mnist_ratios)},
