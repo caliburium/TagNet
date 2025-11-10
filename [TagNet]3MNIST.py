@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from functions.GumbelTauScheduler import GumbelTauScheduler
-from model.TagNet import TagNetMLP, TagNet_weights
+from model.TagNet import TagNet, TagNet_weights
 from dataloader.data_loader import data_loader
 import math
 import numpy as np
@@ -103,11 +103,11 @@ def run_epoch(mode, model, loaders, criterion, optimizer, epoch, args, tau, lamb
             is_inference = (mode == 'test')
 
             out_label_mnist, out_domain_mnist, part_idx_mnist, switcher_prob_mnist = model(
-                mnist_images, alpha=lambda_p, tau=tau, inference=is_inference)
+                mnist_images, grl_lambda=lambda_p, tau=tau, inference=is_inference)
             out_label_kmnist, out_domain_kmnist, part_idx_kmnist, switcher_prob_kmnist = model(
-                kmnist_images, alpha=lambda_p, tau=tau, inference=is_inference)
+                kmnist_images, grl_lambda=lambda_p, tau=tau, inference=is_inference)
             out_label_fmnist, out_domain_fmnist, part_idx_fmnist, switcher_prob_fmnist = model(
-                fmnist_images, alpha=lambda_p, tau=tau, inference=is_inference)
+                fmnist_images, grl_lambda=lambda_p, tau=tau, inference=is_inference)
 
             if i % 1 == 0 and mode == 'train':
                 print(f"--- [Epoch {epoch + 1}, Batch {i}] Partition Stats ---")
@@ -321,15 +321,15 @@ def main():
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_domains', type=int, default=3)
     parser.add_argument('--fc_hidden', type=int, default=384)
-    parser.add_argument('--disc_hidden', type=int, default=384)
+    parser.add_argument('--disc_hidden', type=int, default=24)
 
     # tau scheduler
     parser.add_argument('--init_tau', type=float, default=2.0)
     parser.add_argument('--min_tau', type=float, default=0.1)
-    parser.add_argument('--tau_decay', type=float, default=0.9)
+    parser.add_argument('--tau_decay', type=float, default=0.618)
 
     # optimizer
-    parser.add_argument('--lr', type=float, default=1e-2)
+    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
 
@@ -337,12 +337,12 @@ def main():
     parser.add_argument('--prefc_lr', type=float, default=1.0)
     parser.add_argument('--fc_lr', type=float, default=1.0)
     parser.add_argument('--disc_lr', type=float, default=1.0)
-    parser.add_argument('--switcher_lr', type=float, default=0.0)
+    parser.add_argument('--switcher_lr', type=float, default=1.0)
 
     # entropy tune
-    parser.add_argument('--reg_alpha', type=float, default=0.0)
-    parser.add_argument('--reg_beta', type=float, default=0.0)
-    parser.add_argument('--lambda_p', type=float, default=0.0)
+    parser.add_argument('--reg_alpha', type=float, default=0.3)
+    parser.add_argument('--reg_beta', type=float, default=1.0)
+    parser.add_argument('--lambda_p', type=float, default=-0.1)
 
     args = parser.parse_args()
     init_lambda = args.lambda_p
@@ -351,7 +351,7 @@ def main():
     wandb_run = wandb.init(entity="hails",
                            project="TagNet - 3MNIST",
                            config=args.__dict__,
-                           name="[TagnetMLP]3MNIST_lr:" + str(args.lr)
+                           name="[Tagnet]3MNIST_lr:" + str(args.lr)
                                 + "_Batch:" + str(args.batch_size)
                                 + "_FCL:" + str(args.fc_hidden)
                                 + "_DiscL:" + str(args.disc_hidden)
@@ -379,13 +379,15 @@ def main():
 
     print("Data load complete, start training")
 
-    model = TagNetMLP(num_classes=args.num_classes,
-                      num_partition=args.num_partition,
-                      num_domains=args.num_domains,
-                      fc_hidden=args.fc_hidden,
-                      disc_hidden=args.disc_hidden,
-                      device=device
-                      )
+    model = TagNet(num_classes=args.num_classes,
+                   num_partition=args.num_partition,
+                   num_domains=args.num_domains,
+                   fc_hidden=args.fc_hidden,
+                   disc_hidden=args.disc_hidden,
+                   device=device
+            )
+
+    model.to(device)
 
     save_dir = f"./checkpoints/{wandb_run.name}"
     os.makedirs(save_dir, exist_ok=True)
@@ -396,23 +398,22 @@ def main():
     params = TagNet_weights(
         model,
         lr=args.lr,
-        pre_weight=args.prefc_lr,
         disc_weight=args.disc_lr,
         fc_weight=args.fc_lr,
         switcher_weight=args.switcher_lr
     )
 
-    # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.opt_decay)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.opt_decay)
+    # optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     tau_scheduler = GumbelTauScheduler(initial_tau=args.init_tau, min_tau=args.min_tau, decay_rate=args.tau_decay)
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(num_epochs):
         # phi = (1 + math.sqrt(5)) / 2
         # lambda_p = init_lambda / phi ** (epoch / 50)
-        p = epoch / num_epochs
-        lambda_p = 2. / (1. + np.exp(-10 * p)) - 1
-        # lambda_p = init_lambda
+        # p = epoch / num_epochs
+        # lambda_p = 2. / (1. + np.exp(-10 * p)) - 1
+        lambda_p = init_lambda
         tau = tau_scheduler.get_tau()
 
         train_logs, _ = run_epoch(

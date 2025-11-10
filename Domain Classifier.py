@@ -15,8 +15,8 @@ class DomainMLP(nn.Module):
         super(DomainMLP, self).__init__()
         self.num_domains = num_domains
         self.hidden_size = hidden_size
-        self.input_dim = 32 * 6 * 6
-        # self.input_dim = 1 * 28 * 28
+        # self.input_dim = 32 * 6 * 6
+        self.input_dim = 1 * 28 * 28
 
         self.cnn = nn.Sequential(
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, stride=2, padding=0),
@@ -25,31 +25,43 @@ class DomainMLP(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2, padding=0),
         )
 
-        self.classifier = nn.Sequential(
+        self.pre_classifier = nn.Sequential(
             nn.Linear(self.input_dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 10)
         )
 
+        self.classifiers = nn.ModuleList()
+
+        for _ in range(num_domains):
+            classifier = nn.Sequential(
+                nn.Linear(hidden_size, 64),
+                nn.ReLU(),
+                nn.Linear(64, 10)
+            )
+            self.classifiers.append(classifier)
+
         self.discriminator = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_size),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, num_domains)
         )
 
     def forward(self, x):
-        x = self.cnn(x)
         x_flat = x.view(x.size(0), -1)
-        out = self.classifier(x_flat)
-        reverse_feature = ReverseLayerF.apply(x_flat, -1)
+        x_feat = self.pre_classifier(x_flat)
+
+        reverse_feature = ReverseLayerF.apply(x_feat, 0)
         dom_out = self.discriminator(reverse_feature)
-        return out, dom_out
+        dom_pred = torch.argmax(dom_out, dim=1)
+
+        outs = torch.zeros(x_feat.size(0), 10, device=x.device)
+        for dom_idx in range(self.num_domains):
+            mask = (dom_pred == dom_idx)
+            if mask.any():
+                cls = self.classifiers[dom_idx]
+                outs[mask] = cls(x_feat[mask])
+        return outs, dom_out
 
 
 def main():
