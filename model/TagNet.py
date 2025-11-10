@@ -163,8 +163,15 @@ class TagNetMLP(nn.Module):
         self.device = device
         self.num_partition = num_partition
 
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=24, kernel_size=3, stride=2, padding=0),  # 32 to 15 / 28 to 13
+            nn.BatchNorm2d(24),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=0),  # 15 to 7 / 13 to 6
+        )
+
         self.pre_classifier = nn.Sequential(
-            nn.Linear(3 * 32 * 32, fc_hidden),
+            nn.Linear(1 * 28 * 28, fc_hidden), # 24 * 6 * 6
             nn.BatchNorm1d(fc_hidden),
             nn.ReLU(),
         )
@@ -179,6 +186,7 @@ class TagNetMLP(nn.Module):
             nn.Linear(fc_hidden, disc_hidden),
             nn.BatchNorm1d(disc_hidden),
             nn.ReLU(),
+            # nn.Dropout(p=0.5)
         )
 
         self.discriminator_fc = nn.Linear(disc_hidden, num_domains)
@@ -188,6 +196,10 @@ class TagNetMLP(nn.Module):
         self.create_partitioned_classifier()
         self.sync_classifier_with_subnetworks()
         self.to(self.device)
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0.0, 0.02)
 
     def create_partitioned_classifier(self):
         self.partitioned_classifier = nn.ModuleList()
@@ -207,7 +219,7 @@ class TagNetMLP(nn.Module):
                     partition_size = output_size // self.num_partition
 
                     partitioned_layer.append(nn.Linear(input_size, partition_size))
-                    partitioned_layer.append(nn.ReLU(inplace=True))
+                    partitioned_layer.append(nn.ReLU(inplace=False))
 
                 elif i == len(linear_layers) - 1:
                     input_size = linear_layer.in_features
@@ -256,18 +268,19 @@ class TagNetMLP(nn.Module):
         domain_output = self.discriminator_fc(domain_penul)
 
         partition_switcher_output = self.partition_switcher(domain_penul)
-        partition_prob_soft = torch.softmax(partition_switcher_output, dim=1)
 
         if not inference:  # mode == 'train'
-            partition_prob_hard = gumbel_softmax(partition_switcher_output, tau=tau, hard=True)
-            partition_idx = torch.argmax(partition_prob_hard, dim=1)
+            partition_prob = gumbel_softmax(partition_switcher_output, tau=tau, hard=False)
+            partition_idx = torch.argmax(partition_prob, dim=1)
         else:  # mode == 'test'
-            partition_idx = torch.argmax(partition_prob_soft, dim=1)
+            partition_prob = torch.softmax(partition_switcher_output, dim=1)
+            partition_idx = torch.argmax(partition_prob, dim=1)
 
 
         class_output_partitioned = torch.zeros(feature.size(0),
                                                self.partitioned_classifier[0][-1].out_features,
                                                device=self.device)
+
         for p_i in range(self.num_partition):
             indices = torch.where(partition_idx == p_i)[0]
 
@@ -285,7 +298,7 @@ class TagNetMLP(nn.Module):
         if self.training:
             self.sync_classifier_with_subnetworks()
 
-        return class_output_partitioned, domain_output, partition_idx, partition_prob_soft
+        return class_output_partitioned, domain_output, partition_idx, partition_prob
 
 
 def TagNet_weights(model, lr, pre_weight=1.0, fc_weight=1.0, disc_weight=1.0, switcher_weight=1.0):

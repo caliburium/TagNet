@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=100)
     # parser.add_argument('--pre_epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=500)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
@@ -29,13 +29,13 @@ def main():
 
     # Initialize Weights and Biases
     wandb.init(entity="hails",
-               project="Adversarial Training is Shit",
+               project="TagNet - MSC",
                config=args.__dict__,
-               name="[DANN]S:SVHN/T:MNIST_1024/128 -> Fucking Black&White Version"
+               name="[DANN]S:SVHN/T:MNIST_512/128"
                )
 
-    mnist_loader, mnist_loader_test = data_loader('MNIST_RS', args.batch_size)
-    svhn_loader, svhn_loader_test = data_loader('SVHN_BW', args.batch_size)
+    mnist_loader, mnist_loader_test = data_loader('MNISTM', args.batch_size)
+    svhn_loader, svhn_loader_test = data_loader('SVHN', args.batch_size)
 
     print("Data load complete, start training")
 
@@ -54,45 +54,6 @@ def main():
     # scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     criterion = nn.CrossEntropyLoss()
 
-    """
-    for epoch in range(pre_epochs):
-        model.train()
-        i = 0
-
-        total_svhn_loss, total_svhn_correct = 0, 0
-        total_samples = 0
-
-        for svhn_images, svhn_labels in svhn_loader:
-            lambda_p = 0.0
-
-            svhn_images, svhn_labels = svhn_images.to(device), svhn_labels.to(device)
-
-            pre_optimizer.zero_grad()
-
-            svhn_out, _ = model(svhn_images, alpha=lambda_p)
-            loss = criterion(svhn_out, svhn_labels)
-
-            loss.backward()
-            pre_optimizer.step()
-
-            total_svhn_loss += loss.item()
-
-            svhn_correct = (torch.argmax(svhn_out, dim=1) == svhn_labels).sum().item()
-            total_svhn_correct += svhn_correct
-            total_samples += svhn_labels.size(0)
-
-            i += 1
-
-        svhn_acc_epoch = (total_svhn_correct / total_samples) * 100
-        svhn_loss_epoch = total_svhn_loss / total_samples
-
-        print(f"Pre Epoch {epoch + 1} | "
-              f"SVHN Acc: {svhn_acc_epoch:.2f}%, Loss: {svhn_loss_epoch:.6f}"
-              )
-
-    print("Pretraining done")
-    """
-
     for epoch in range(num_epochs):
         model.train()
         total_mnist_domain_loss, total_svhn_domain_loss, total_domain_loss = 0, 0, 0
@@ -103,8 +64,8 @@ def main():
 
         for i, (mnist_data, svhn_data) in enumerate(zip(mnist_loader, svhn_loader)):
             p = epoch / num_epochs
-            # lambda_p = 2. / (1. + np.exp(-5 * p)) - 1
-            lambda_p = 10
+            # lambda_p = 2. / (1. + np.exp(-10 * p)) - 1
+            lambda_p = -1
 
             mnist_images, mnist_labels = mnist_data
             mnist_images, mnist_labels = mnist_images.to(device), mnist_labels.to(device)
@@ -113,12 +74,15 @@ def main():
             mnist_dlabels = torch.full((mnist_images.size(0),), 0, dtype=torch.long, device=device)
             svhn_dlabels = torch.full((svhn_images.size(0),), 1, dtype=torch.long, device=device)
 
+            images4domain = torch.cat((mnist_images, svhn_images), dim=0)
+            labels4domain = torch.cat((mnist_dlabels, svhn_dlabels), dim=0)
             optimizer.zero_grad()
 
             mnist_out, mnist_domain_out = model(mnist_images, alpha=lambda_p)
             svhn_out, svhn_domain_out = model(svhn_images, alpha=lambda_p)
 
             label_loss = criterion(svhn_out, svhn_labels)
+            # domain_loss = criterion(images4domain, labels4domain)
 
             mnist_domain_loss = criterion(mnist_domain_out, mnist_dlabels)
             svhn_domain_loss = criterion(svhn_domain_out, svhn_dlabels)
@@ -179,14 +143,14 @@ def main():
 
         wandb.log({
             'Train/Label Loss': label_avg_loss,
-            'Train/Domain MNIST Loss': mnist_domain_avg_loss,
-            'Train/Domain SVHN Loss': svhn_domain_avg_loss,
-            'Train/Domain Loss': domain_avg_loss,
-            'Train/Total Loss': total_avg_loss,
-            'Train/MNIST Label Accuracy': mnist_acc_epoch,
-            'Train/SVHN Label Accuracy': svhn_acc_epoch,
-            'Train/MNIST Domain Accuracy': mnist_domain_acc_epoch,
-            'Train/SVHN Domain Accuracy': svhn_domain_acc_epoch,
+            'Train Loss/Domain MNIST': mnist_domain_avg_loss,
+            'Train Loss/Domain SVHN': svhn_domain_avg_loss,
+            'Train Loss/Domain': domain_avg_loss,
+            'Train Loss/Total': total_avg_loss,
+            'Train/Acc Label MNIST': mnist_acc_epoch,
+            'Train/Acc Label SVHN': svhn_acc_epoch,
+            'Train/Acc Domain MNIST': mnist_domain_acc_epoch,
+            'Train/Acc Domain SVHN': svhn_domain_acc_epoch,
             'Parameter/LR_FeatureExtractor': current_lr_feature,
             'Parameter/LR_Classifier': current_lr_classifier,
             'Parameter/LR_Discriminator': current_lr_discriminator,
@@ -222,10 +186,10 @@ def main():
             domain_loss_avg = total_domain_loss / total
 
             wandb.log({
-                f'Test/Label {group} Accuracy': label_acc,
-                f'Test/Domain {group} Accuracy': domain_acc,
-                f'Test/Label {group} Loss': label_loss_avg,
-                f'Test/Domain {group} Loss': domain_loss_avg,
+                f'Test/Acc Label {group}': label_acc,
+                f'Test/Acc Domain {group}': domain_acc,
+                f'Test Loss/Label {group}': label_loss_avg,
+                f'Test Loss/Domain {group}': domain_loss_avg,
             }, step=epoch + 1)
 
             print(

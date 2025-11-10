@@ -8,7 +8,7 @@ class DANN(nn.Module):
         super(DANN, self).__init__()
 
         self.features = nn.Sequential(
-            nn.Conv2d(in_channels=1, out_channels=32, kernel_size=5, stride=1, padding=0), # 32 to 28
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=5, stride=1, padding=0), # 32 to 28
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=0), # 28 to 13
@@ -32,13 +32,13 @@ class DANN(nn.Module):
         )
 
         self.discriminator = nn.Sequential(
-            nn.Linear(128 * 4 * 4, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(128 * 4 * 4, 60),
+            nn.BatchNorm1d(60),
             nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(60, 60),
+            nn.BatchNorm1d(60),
             nn.ReLU(),
-            nn.Linear(128, 2)
+            nn.Linear(60, 2)
         )
 
         for m in self.modules():
