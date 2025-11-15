@@ -1,10 +1,4 @@
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 1.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 2.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 3.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 4.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 5.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 6.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 7.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 8.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 9.0
-python [TagNetMLP]MSC.py --reg_alpha 1.0 --reg_beta 10.0
+python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 384
+python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 256
+python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 192
+python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 128

@@ -9,47 +9,49 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class SharedMLP(nn.Module):
-    def __init__(self, num_classes=10, hidden_size=384):
+    def __init__(self, num_classes=10, hidden_size=1152, partitioned_size=384):
         super(SharedMLP, self).__init__()
         self.num_classes = num_classes
         self.hidden_size = hidden_size
         self.input_dim = 1 * 28 * 28
-        # self.input_dim = 24 * 6 * 6
+        # self.input_dim = 16 * 7 * 7
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels=1, out_channels=24, kernel_size=3, stride=2, padding=0),  # 28 to 13
-            nn.BatchNorm2d(24),
+            nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=0),  # 13 to 6
-        )
-
-        self.extractor = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_size),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Flatten(),
+            nn.Linear(32 * 3 * 3, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, partitioned_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_classes)
+            nn.Linear(partitioned_size, num_classes)
         )
 
+
     def forward(self, x):
-        # x = self.cnn(x)
-        x_flat = x.view(x.size(0), -1)
-        features = self.extractor(x_flat)
-        class_output = self.classifier(features)
+        x = self.cnn(x)
+        class_output = self.classifier(x)
 
         return class_output
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epoch', type=int, default=200)
+    parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--batch_size', type=int, default=500)
-    parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--hidden_size', type=int, default=384)
+    parser.add_argument('--lr', type=float, default=1e-6)
+    parser.add_argument('--hidden_size', type=int, default=1152)
+    parser.add_argument('--part_size', type=int, default=384)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
 
@@ -59,7 +61,7 @@ def main():
     wandb.init(entity="hails",
                project="TagNet - 3MNIST",
                config=args.__dict__,
-               name="[MLP]3MNIST_" + str(args.hidden_size)
+               name="[CNN+Disc]3MNIST_" + str(args.hidden_size)
                     + "_lr:" + str(args.lr)
                     + "_Batch:" + str(args.batch_size)
                     + "_epoch:" + str(args.epoch)
@@ -73,10 +75,15 @@ def main():
 
     print("Data load complete, start training")
 
-    model = SharedMLP(num_classes=10, hidden_size=args.hidden_size).to(device)
+    model = SharedMLP(num_classes=10,
+                      hidden_size=args.hidden_size,
+                      partitioned_size=args.part_size).to(device)
     # optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.opt_decay)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.opt_decay)
+    optimizer_f = optim.Adam(model.cnn.parameters(), lr=args.lr)
+    optimizer_c = optim.Adam(model.classifier.parameters(), lr=args.lr)
     criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_f, T_max=num_epochs, eta_min=0.0)
+    best_test_acc = 0.0
 
     for epoch in range(num_epochs):
         model.train()
@@ -111,7 +118,8 @@ def main():
             kmnist_images, kmnist_labels = kmnist_images.to(device), kmnist_labels.to(device)
             fmnist_images, fmnist_labels = fmnist_images.to(device), fmnist_labels.to(device)
 
-            optimizer.zero_grad()
+            optimizer_c.zero_grad()
+            optimizer_f.zero_grad()
 
             out_mnist = model(mnist_images)
             loss_mnist = criterion(out_mnist, mnist_labels)
@@ -124,7 +132,8 @@ def main():
 
             total_loss = loss_mnist + loss_kmnist + loss_fmnist
             total_loss.backward()
-            optimizer.step()
+            optimizer_c.step()
+            optimizer_f.step()
 
             total_loss_mnist += loss_mnist.item()
             total_loss_kmnist += loss_kmnist.item()
@@ -138,6 +147,8 @@ def main():
             samples_kmnist += kmnist_labels.size(0)
             samples_fmnist += fmnist_labels.size(0)
 
+        scheduler.step()
+
         avg_loss_mnist = total_loss_mnist / len_dataloader
         avg_loss_kmnist = total_loss_kmnist / len_dataloader
         avg_loss_fmnist = total_loss_fmnist / len_dataloader
@@ -147,9 +158,9 @@ def main():
         acc_fmnist = (correct_fmnist / samples_fmnist) * 100
 
         print(f'Epoch [{epoch + 1}/{num_epochs}]')
-        print(f'  Train MNIST  | Loss: {avg_loss_mnist:.6f} | Acc: {acc_mnist:.3f}%')
-        print(f'  Train KMNIST | Loss: {avg_loss_kmnist:.6f} | Acc: {acc_kmnist:.3f}%')
-        print(f'  Train FMNIST | Loss: {avg_loss_fmnist:.6f} | Acc: {acc_fmnist:.3f}%')
+        print(f'  Train MNIST  | Acc: {acc_mnist:.3f}%')
+        print(f'  Train KMNIST | Acc: {acc_kmnist:.3f}%')
+        print(f'  Train FMNIST | Acc: {acc_fmnist:.3f}%')
 
         wandb.log({
             'Train Loss/Label MNIST': avg_loss_mnist,
@@ -162,7 +173,7 @@ def main():
 
         model.eval()
 
-        def tester(loader, group_name):
+        def tester(loader):
             label_correct, total_label_loss, total = 0, 0, 0
 
             for images, labels in loader:
@@ -177,18 +188,34 @@ def main():
 
             label_acc = label_correct / total * 100
             label_loss_avg = total_label_loss / total
-
-            wandb.log({
-                f'Test/Acc Label {group_name}': label_acc,
-                f'Test Loss/Label {group_name}': label_loss_avg,
-            }, step=epoch + 1)
-
-            print(f'  Test {group_name:<6} | Loss: {label_loss_avg:.6f} | Acc: {label_acc:.3f}%')
+            return label_acc, label_loss_avg
 
         with torch.no_grad():
-            tester(mnist_loader_test, 'MNIST')
-            tester(kmnist_loader_test, 'KMNIST')
-            tester(fmnist_loader_test, 'FMNIST')
+            mnist_acc, mnist_loss = tester(mnist_loader_test)
+            kmnist_acc, kmnist_loss = tester(kmnist_loader_test)
+            fmnist_acc, fmnist_loss = tester(fmnist_loader_test)
+
+        print(f'  Test MNIST  | Acc: {mnist_acc:.3f}%')
+        print(f'  Test KMNIST | Acc: {kmnist_acc:.3f}%')
+        print(f'  Test FMNIST | Acc: {fmnist_acc:.3f}%')
+
+        test_acc_avg = (mnist_acc + kmnist_acc + fmnist_acc) / 3
+
+        if test_acc_avg > best_test_acc:
+            best_test_acc = test_acc_avg
+
+        print(f'  >> Test Avg Acc: {test_acc_avg:.3f}% | Best Test Avg Acc: {best_test_acc:.3f}%')
+
+        wandb.log({
+            'Test/Acc Label MNIST': mnist_acc,
+            'Test/Acc Label KMNIST': kmnist_acc,
+            'Test/Acc Label FMNIST': fmnist_acc,
+            'Test/Loss Label MNIST': mnist_loss,
+            'Test/Loss Label KMNIST': kmnist_loss,
+            'Test/Loss Label FMNIST': fmnist_loss,
+            'Parameters/Acc Label Avg': test_acc_avg,
+            'Parameters/Best Avg Accuracy': best_test_acc,
+        }, step=epoch + 1)
 
 
 if __name__ == '__main__':

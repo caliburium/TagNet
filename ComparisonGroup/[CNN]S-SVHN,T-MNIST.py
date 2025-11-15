@@ -6,7 +6,7 @@ import wandb
 from dataloader.data_loader import data_loader
 from model.SimpleCNN import SimpleCNN, cnn_weights
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def main():
     parser = argparse.ArgumentParser()

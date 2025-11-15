@@ -3,8 +3,6 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
-
 from functions.GumbelTauScheduler import GumbelTauScheduler
 from model.TagNet import TagNet, TagNet_weights
 from dataloader.data_loader import data_loader
@@ -30,7 +28,7 @@ def get_label_partition_log_data(label_partition_counts, task_name, num_classes,
             log_data[log_key] = percentage
     return log_data
 
-def run_epoch(mode, model, loaders, criterion, optimizer, epoch, args, tau):
+def run_epoch(mode, model, loaders, criterion, optimizer, optimizer_f, scheduler, epoch, args, tau):
     if mode == 'train':
         model.train()
         prefix = "Train"
@@ -71,10 +69,13 @@ def run_epoch(mode, model, loaders, criterion, optimizer, epoch, args, tau):
 
             if mode == 'train':
                 optimizer.zero_grad()
+                optimizer_f.zero_grad()
 
-            out_label_mnist, out_task_mnist, prob_mnist = model(mnist_images, tau=tau)
-            out_label_kmnist, out_task_kmnist, prob_kmnist = model(kmnist_images, tau=tau)
-            out_label_fmnist, out_task_fmnist, prob_fmnist = model(fmnist_images,tau=tau)
+            is_inference = (mode == 'test')
+
+            out_label_mnist, out_task_mnist, prob_mnist = model(mnist_images, tau=tau, inference=is_inference)
+            out_label_kmnist, out_task_kmnist, prob_kmnist = model(kmnist_images, tau=tau, inference=is_inference)
+            out_label_fmnist, out_task_fmnist, prob_fmnist = model(fmnist_images,tau=tau, inference=is_inference)
 
             part_idx_mnist = torch.argmax(prob_mnist, dim=1)
             part_idx_kmnist = torch.argmax(prob_kmnist, dim=1)
@@ -112,11 +113,12 @@ def run_epoch(mode, model, loaders, criterion, optimizer, epoch, args, tau):
             fmnist_task_loss = criterion(out_task_fmnist, fmnist_dlabels)
             task_loss = mnist_task_loss + kmnist_task_loss + fmnist_task_loss
 
-            loss = label_loss + task_loss
+            loss = task_loss + label_loss
 
             if mode == 'train':
                 loss.backward()
                 optimizer.step()
+                optimizer_f.step()
 
             mnist_partition_counts += torch.bincount(part_idx_mnist, minlength=args.num_tasks).to(device)
             kmnist_partition_counts += torch.bincount(part_idx_kmnist, minlength=args.num_tasks).to(device)
@@ -222,27 +224,26 @@ def run_epoch(mode, model, loaders, criterion, optimizer, epoch, args, tau):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epoch', type=int, default=100)
+    parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--batch_size', type=int, default=500)
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_tasks', type=int, default=3)
-    parser.add_argument('--fc_hidden', type=int, default=384)
-    parser.add_argument('--disc_hidden', type=int, default=384)
+    parser.add_argument('--fc_hidden', type=int, default=1152)
+    parser.add_argument('--disc_hidden', type=int, default=192)
 
     # tau scheduler
-    parser.add_argument('--init_tau', type=float, default=2.0)
+    parser.add_argument('--init_tau', type=float, default=3.0)
     parser.add_argument('--min_tau', type=float, default=0.1)
-    parser.add_argument('--tau_decay', type=float, default=0.97)
+    parser.add_argument('--tau_decay', type=float, default=0.98)
 
     # optimizer
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=1e-6)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
 
-    # learning rate tune
+    # tune
     parser.add_argument('--fc_lr', type=float, default=1.0)
     parser.add_argument('--disc_lr', type=float, default=1.0)
-
 
     args = parser.parse_args()
     num_epochs = args.epoch
@@ -288,30 +289,31 @@ def main():
     save_interval = 50
     min_save_epoch = 50
 
-    params = TagNet_weights(
-        model,
-        lr=args.lr,
-        disc_weight=args.disc_lr,
-        fc_weight=args.fc_lr,
+    optimizer = optim.Adam(list(model.discriminator.parameters())
+                           +  list(model.classifiers.parameters()),
+                           lr=args.lr, weight_decay=args.opt_decay)
+    optimizer_f = optim.Adam(model.features.parameters(), lr=args.lr, weight_decay=args.opt_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer_f,
+        T_max=num_epochs,
+        eta_min=0.0,
     )
-
-    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.opt_decay)
     tau_scheduler = GumbelTauScheduler(initial_tau=args.init_tau, min_tau=args.min_tau, decay_rate=args.tau_decay)
-    scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=0)
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(num_epochs):
         tau = tau_scheduler.get_tau()
-
         train_logs, _ = run_epoch(
-            'train', model, train_loaders, criterion, optimizer, epoch, args, tau
+            'train', model, train_loaders, criterion, optimizer, optimizer_f, scheduler, epoch, args, tau
         )
 
         test_logs, test_accs = run_epoch(
-            'test', model, test_loaders, criterion, None, epoch, args, 0.1
+            'test', model, test_loaders, criterion, None, None, None, epoch, args, 0.1
         )
 
         all_logs = {**train_logs, **test_logs}
+        current_lr = scheduler.get_last_lr()[0]
+        all_logs['Parameters/LR_feature'] = current_lr
         all_logs['Parameters/Tau'] = tau
 
         wandb.log(all_logs, step=epoch + 1)
@@ -331,6 +333,7 @@ def main():
             print(f"--- Periodic checkpoint saved to {periodic_save_path} ---")
 
         tau_scheduler.step()
+        scheduler.step()
 
     final_save_path = os.path.join(save_dir, f"final_model_epoch_{num_epochs}.pt")
     torch.save(model.state_dict(), final_save_path)
