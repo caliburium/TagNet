@@ -207,3 +207,7 @@ marimo/_lsp/
 __marimo__/
 /ComparisonGroup/data/
 /ComparisonGroup/wandb/
+/checkpoints/
+/ComparisonGroup/
+/data/
+/wandb/

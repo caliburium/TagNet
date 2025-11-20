@@ -6,8 +6,8 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, ConstantLR, SequentialLR, LinearLR
 from functions.GumbelTauScheduler import GumbelTauScheduler
 from thop import profile
-from model.TagNet import TagNet
-from dataloader.data_loader import data_loader
+from model.TagNet import TagNet_Alex
+from dataloader.DomainNetLoader import dn_loader
 import wandb
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -249,9 +249,23 @@ def main():
                                 + "_FCL:" + str(args.fc_hidden)
                            )
 
-    numbers_loader, numbers_loader_test = data_loader('MNIST', args.batch_size)
-    fashion_loader, fashion_loader_test = data_loader('FMNIST', args.batch_size)
-    gana_loader, gana_loader_test = data_loader('KMNIST', args.batch_size)
+
+    # face eye nose mouth brain skull foot leg arm hand
+    humanbody_real_train, humanbody_real_test = dn_loader('real', [108, 106, 198, 193, 40, 264, 123, 168, 9, 137], args.batch_size)
+
+    # dog, tiger, sheep, elephant, horse, cat, monkey, lion, pig
+    mammal_paint_train, mammal_paint_test = dn_loader('painting', [91, 311, 343, 258, 103, 147, 64, 186, 174, 222], args.batch_size)
+
+    # nail, sword, bottlecap, basket, rifle, bandage, pliers, axe, paintcan, anvil
+    tool_paint_train, tool_paint_test = dn_loader('painting', [196, 299, 37, 18, 243, 14, 226, 11, 206, 7], args.batch_size)
+
+    # shoe, sock, bracelet, wristwatch, bowtie, hat, eyeglasses, sweater, pants, underwear
+    cloth_real_train, cloth_real_test = dn_loader('real', [259, 274, 39, 341, 38, 139, 107, 297, 209, 329], args.batch_size)
+
+    # toaster, headphones, washing machine, light bulb, television, telephone, keyboard, laptop, stereo, camera
+    electricity_quickdraw_train, electricity_quickdraw_test = dn_loader('quickdraw', [312, 140, 333, 169, 305, 304, 161, 166, 285, 55], args.batch_size)
+
+
 
     train_loaders = {
         'mnist': numbers_loader,
@@ -266,16 +280,16 @@ def main():
 
     print("Data load complete, start training")
 
-    model = TagNet(num_classes=args.num_classes,
-                   num_tasks=args.num_tasks,
-                   fc_hidden=args.fc_hidden,
-                   disc_hidden=args.disc_hidden,
-                   device=device
-            )
+    model = TagNet_Alex(num_classes=args.num_classes,
+                        num_tasks=args.num_tasks,
+                        fc_hidden=args.fc_hidden,
+                        disc_hidden=args.disc_hidden,
+                        device=device
+                        )
 
     model.to(device)
 
-    dummy_input = torch.randn(1, 1, 28, 28).to(device)
+    dummy_input = torch.randn(1, 3, 224, 224).to(device)
     flops_train, thop_params = profile(model, inputs=(dummy_input,), verbose=False)
     flops_infer, _ = profile(model, inputs=(dummy_input, 0.1, True), verbose=False)
 

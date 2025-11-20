@@ -10,9 +10,9 @@ from dataloader.data_loader import data_loader
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class SharedMLP(nn.Module):
+class SimpleCNN(nn.Module):
     def __init__(self, num_classes=10, partitioned_size=384):
-        super(SharedMLP, self).__init__()
+        super(SimpleCNN, self).__init__()
         self.num_classes = num_classes
         # self.input_dim = 16 * 7 * 7
 
@@ -34,7 +34,8 @@ class SharedMLP(nn.Module):
 
 
     def forward(self, x):
-        x = self.cnn(x)
+        x = self.features(x)
+        x = torch.flatten(x, 1)
         class_output = self.classifier(x)
 
         return class_output
@@ -43,10 +44,10 @@ class SharedMLP(nn.Module):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=1000)
-    parser.add_argument('--anneal_epochs', type=int, default=150)
+    parser.add_argument('--anneal_epochs', type=int, default=120)
     parser.add_argument('--batch_size', type=int, default=500)
     parser.add_argument('--lr', type=float, default=1e-6)
-    parser.add_argument('--part_size', type=int, default=512)
+    parser.add_argument('--fc_hidden', type=int, default=512)
     parser.add_argument('--momentum', type=float, default=0.90)
     parser.add_argument('--opt_decay', type=float, default=1e-6)
 
@@ -56,7 +57,9 @@ def main():
     wandb.init(entity="hails",
                project="TagNet - 3MNIST",
                config=args.__dict__,
-               name="[CNN]3MNIST_" + str(args.part_size)
+               name="[CNN]3MNIST_lr:" + str(args.lr)
+                    + "_Batch:" + str(args.batch_size)
+                    + "FCL:" + str(args.fc_hidden)
                )
 
     mnist_loader, mnist_loader_test = data_loader('MNIST', args.batch_size)
@@ -67,7 +70,7 @@ def main():
 
     print("Data load complete, start training")
 
-    model = SharedMLP(num_classes=10, partitioned_size=args.part_size).to(device)
+    model = SimpleCNN(num_classes=10, partitioned_size=args.fc_hidden).to(device)
 
     dummy_input = torch.randn(1, 1, 28, 28).to(device)
     flops_train, thop_params = profile(model, inputs=(dummy_input,), verbose=False)

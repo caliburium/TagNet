@@ -1,4 +1,9 @@
-python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 384
-python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 256
-python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 192
-python [TagNet]3MNIST.py --lr 1e-6 --disc_hidden 128
+#python [TagNet]3MNIST.py --fc_hidden 512
+#python [TagNet]3MNIST.py --fc_hidden 256
+#python [TagNet]3MNIST.py --fc_hidden 128
+#python [TagNet]3MNIST.py --fc_hidden 64
+python [TagNet]3MNIST.py --fc_hidden 32
+python [TagNet]3MNIST.py --fc_hidden 16
+python [TagNet]3MNIST.py --fc_hidden 8
+python [TagNet]3MNIST.py --fc_hidden 4
+
