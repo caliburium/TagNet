@@ -4,42 +4,36 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, ConstantLR, SequentialLR, LinearLR
-from functions.GumbelTauScheduler import GumbelTauScheduler
+from torchvision.models import alexnet, AlexNet_Weights
 from thop import profile
-from model.TagNet import TagNet_Alex
 from dataloader.DomainNetLoader import dn_loader
 import wandb
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def get_label_partition_log_data(label_partition_counts, task_name, num_classes, num_tasks, prefix):
-    log_data = {}
-    total_counts_per_label = label_partition_counts.sum(dim=1)
+class BaselineAlexNet(nn.Module):
+    def __init__(self, num_classes=10, fc_hidden=512):
+        super(BaselineAlexNet, self).__init__()
 
-    for label_idx in range(num_classes):
-        total_for_label = total_counts_per_label[label_idx].item()
-        for part_idx in range(num_tasks):
-            count = label_partition_counts[label_idx, part_idx].item()
+        base = alexnet(weights=AlexNet_Weights.IMAGENET1K_V1)
+        self.features = base.features
 
-            if total_for_label > 0:
-                percentage = (count / total_for_label) * 100
-            else:
-                percentage = 0.0
+        feat_dim = 256 * 6 * 6
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(feat_dim, fc_hidden),
+            nn.ReLU(),
+            nn.Linear(fc_hidden, num_classes)
+        )
 
-            log_key = f"Partition {prefix} {task_name}/Label:{label_idx}/Partition:{part_idx}"
-            log_data[log_key] = percentage
-    return log_data
-
-
-def update_label_partition_counts(label_partition_counts, labels, partition_indices, num_classes):
-    for l_idx in range(labels.size(0)):
-        label_val = labels[l_idx].item()
-        if 0 <= label_val < num_classes:
-            label_partition_counts[label_val, partition_indices[l_idx].item()] += 1
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
 
-def run_epoch(mode, model, loaders, criterion, optimizer_c, optimizer_f, epoch, args, tau):
+def run_epoch(mode, model, loaders, criterion, optimizer_c, optimizer_f, epoch, args):
     if mode == 'train':
         model.train()
         prefix = "Train"
@@ -49,16 +43,11 @@ def run_epoch(mode, model, loaders, criterion, optimizer_c, optimizer_f, epoch, 
         prefix = "Test"
         context = torch.no_grad()
 
-    stats = {domain: {'loss': 0, 'correct': 0, 'task_loss': 0, 'task_correct': 0, 'samples': 0}
+    stats = {domain: {'loss': 0, 'correct': 0, 'samples': 0}
              for domain in ['human', 'mammal', 'tool', 'cloth', 'electricity']}
-
-    partition_counts = {k: torch.zeros(args.num_tasks, device=device) for k in stats.keys()}
-    label_partition_counts = {k: torch.zeros(args.num_classes, args.num_tasks, device=device) for k in stats.keys()}
 
     total_loss_sum = 0
     total_samples_sum = 0
-
-    domain_idx_map = {'human': 0, 'mammal': 1, 'tool': 2, 'cloth': 3, 'electricity': 4}
 
     with context:
         if mode == 'train':
@@ -79,34 +68,22 @@ def run_epoch(mode, model, loaders, criterion, optimizer_c, optimizer_f, epoch, 
                     images, labels = val[0].to(device), val[1].to(device)
                     bs = images.size(0)
 
-                    dlabel = torch.full((bs,), domain_idx_map[key], dtype=torch.long, device=device)
+                    out = model(images)
+                    loss = criterion(out, labels)
+                    loss_batch_total += loss
 
-                    out_label, out_task, prob = model(images, tau=tau, inference=False)
-                    part_idx = torch.argmax(prob, dim=1)
-
-                    l_loss = criterion(out_label, labels)
-                    t_loss = criterion(out_task, dlabel)
-                    current_loss = l_loss + t_loss
-                    loss_batch_total += current_loss
-
-                    update_label_partition_counts(label_partition_counts[key], labels, part_idx, args.num_classes)
-                    partition_counts[key] += torch.bincount(part_idx, minlength=args.num_tasks).to(device)
-
-                    stats[key]['loss'] += l_loss.item() * bs
-                    stats[key]['task_loss'] += t_loss.item() * bs
-                    stats[key]['correct'] += (torch.argmax(out_label, dim=1) == labels).sum().item()
-                    stats[key]['task_correct'] += (torch.argmax(out_task, dim=1) == dlabel).sum().item()
+                    stats[key]['loss'] += loss.item() * bs
+                    stats[key]['correct'] += (torch.argmax(out, dim=1) == labels).sum().item()
                     stats[key]['samples'] += bs
 
                 loss_batch_total.backward()
                 optimizer_c.step()
                 optimizer_f.step()
 
-                total_loss_sum += loss_batch_total.item() * 5
+                total_loss_sum += loss_batch_total.item()
 
                 if i % 10 == 0:
                     print(f"--- [Epoch {epoch + 1}, Batch {i}] Train Stats ---")
-
 
         else:
             for key, loader in loaders.items():
@@ -114,68 +91,43 @@ def run_epoch(mode, model, loaders, criterion, optimizer_c, optimizer_f, epoch, 
                     images, labels = images.to(device), labels.to(device)
                     bs = images.size(0)
 
-                    dlabel = torch.full((bs,), domain_idx_map[key], dtype=torch.long, device=device)
+                    out = model(images)
+                    loss = criterion(out, labels)
 
-                    out_label, out_task, prob = model(images, tau=tau, inference=True)
-                    part_idx = torch.argmax(prob, dim=1)
-
-                    l_loss = criterion(out_label, labels)
-                    t_loss = criterion(out_task, dlabel)
-
-                    update_label_partition_counts(label_partition_counts[key], labels, part_idx, args.num_classes)
-                    partition_counts[key] += torch.bincount(part_idx, minlength=args.num_tasks).to(device)
-
-                    stats[key]['loss'] += l_loss.item() * bs
-                    stats[key]['task_loss'] += t_loss.item() * bs
-                    stats[key]['correct'] += (torch.argmax(out_label, dim=1) == labels).sum().item()
-                    stats[key]['task_correct'] += (torch.argmax(out_task, dim=1) == dlabel).sum().item()
+                    stats[key]['loss'] += loss.item() * bs
+                    stats[key]['correct'] += (torch.argmax(out, dim=1) == labels).sum().item()
                     stats[key]['samples'] += bs
 
-                    total_loss_sum += (l_loss + t_loss).item()
+                    total_loss_sum += loss.item()
 
     log_data = {}
-    partition_ratios_str = {}
     total_samples_all = sum([stats[k]['samples'] for k in stats])
-
-    total_label_correct = 0
+    total_correct_all = 0
 
     for key in ['human', 'mammal', 'tool', 'cloth', 'electricity']:
         n_samples = stats[key]['samples']
         if n_samples == 0: continue
 
-        part_log = get_label_partition_log_data(
-            label_partition_counts[key], key.upper(), args.num_classes, args.num_tasks, prefix=prefix)
-        log_data.update(part_log)
-
-        ratios = partition_counts[key] / n_samples * 100
-        partition_ratios_str[key] = " | ".join([f"P{p}: {ratios[p]:.1f}%" for p in range(args.num_tasks)])
-        for p in range(args.num_tasks):
-            log_data[f"{prefix}/Partition {p} {key.upper()} Ratio"] = ratios[p].item()
-
         acc = stats[key]['correct'] / n_samples * 100
         loss_avg = stats[key]['loss'] / n_samples
-        task_acc = stats[key]['task_correct'] / n_samples * 100
-        task_loss_avg = stats[key]['task_loss'] / n_samples
 
         log_data[f'{prefix}/Acc Label {key.upper()}'] = acc
         log_data[f'{prefix} Loss/Label {key.upper()}'] = loss_avg
-        log_data[f'{prefix}/Acc Task {key.upper()}'] = task_acc
-        log_data[f'{prefix} Loss/Task {key.upper()}'] = task_loss_avg
 
-        total_label_correct += stats[key]['correct']
+        total_correct_all += stats[key]['correct']
 
-    avg_label_acc = total_label_correct / total_samples_all * 100
-    avg_total_loss = total_loss_sum / total_samples_all
+
+    avg_acc = total_correct_all / total_samples_all * 100
+    avg_total_loss = total_loss_sum / (total_samples_all if mode == 'test' else (total_samples_all / 5))
 
     log_data[f'{prefix} Loss/Total Avg'] = avg_total_loss
-    log_data[f'Parameters/Acc Label Avg'] = avg_label_acc
+    log_data[f'Parameters/Acc Label Avg'] = avg_acc
 
-    print(f'Epoch [{epoch + 1}/{args.epoch}] ({prefix}) | Tau: {tau:<5.3f}')
-    print(f'  [Ratios] H: [{partition_ratios_str["human"]}] | M: [{partition_ratios_str["mammal"]}]')
-    print(f'  [LabelAcc] Avg: {avg_label_acc:<6.2f}% | H: {log_data[f"{prefix}/Acc Label HUMAN"]:<5.1f}% | M: {log_data[f"{prefix}/Acc Label MAMMAL"]:<5.1f}% | T: {log_data[f"{prefix}/Acc Label TOOL"]:<5.1f}%')
+    print(f'Epoch [{epoch + 1}/{args.epoch}] ({prefix})')
+    print(f'  [LabelAcc] Avg: {avg_acc:<6.2f}% | H: {log_data[f"{prefix}/Acc Label HUMAN"]:<5.1f}% | M: {log_data[f"{prefix}/Acc Label MAMMAL"]:<5.1f}% | T: {log_data[f"{prefix}/Acc Label TOOL"]:<5.1f}%')
 
     ind_accs = {
-        'avg': avg_label_acc
+        'avg': avg_acc
     }
 
     return log_data, ind_accs
@@ -187,15 +139,7 @@ def main():
     parser.add_argument('--anneal_epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_classes', type=int, default=10)
-
-    parser.add_argument('--num_tasks', type=int, default=5)
     parser.add_argument('--fc_hidden', type=int, default=512)
-    parser.add_argument('--disc_hidden', type=int, default=512)
-
-    # tau scheduler
-    parser.add_argument('--init_tau', type=float, default=3.0)
-    parser.add_argument('--min_tau', type=float, default=0.1)
-    parser.add_argument('--tau_decay', type=float, default=0.98)
 
     # optimizer
     parser.add_argument('--lr', type=float, default=1e-5)
@@ -208,7 +152,7 @@ def main():
     wandb_run = wandb.init(project="TagNet - DomainNet5",
                            config=args.__dict__,
                            entity="hails",
-                           name="[Tagnet]DN5_lr:" + str(args.lr)
+                           name="[AlexNet]DN5_lr:" + str(args.lr)
                                 + "_Batch:" + str(args.batch_size)
                                 + "_FCL:" + str(args.fc_hidden)
                            )
@@ -229,7 +173,7 @@ def main():
 
     # shoe, sock, bracelet, wristwatch, bowtie, hat, eyeglasses, sweater, pants, underwear
     cloth_quickdraw_train, cloth_quickdraw_test \
-        = dn_loader('quickdraw',[259, 274, 39, 341, 38, 139, 107, 297, 209, 329], args.batch_size)
+        = dn_loader('quickdraw', [259, 274, 39, 341, 38, 139, 107, 297, 209, 329], args.batch_size)
 
     # toaster, headphones, washing machine, light bulb, television, telephone, keyboard, laptop, stereo, camera
     electricity_real_train, electricity_real_test \
@@ -252,39 +196,25 @@ def main():
 
     print("Data load complete, start training")
 
-    model = TagNet_Alex(num_classes=args.num_classes,
-                        num_tasks=args.num_tasks,
-                        fc_hidden=args.fc_hidden,
-                        disc_hidden=args.disc_hidden,
-                        device=device
-                        )
-
-    model.to(device)
+    model = BaselineAlexNet(num_classes=args.num_classes, fc_hidden=args.fc_hidden).to(device)
 
     dummy_input = torch.randn(1, 3, 224, 224).to(device)
-
     print("Calculating FLOPs...")
-    flops_train, thop_params = profile(model, inputs=(dummy_input,), verbose=False)
-    flops_infer, _ = profile(model, inputs=(dummy_input, 0.1, True), verbose=False)
+    flops, thop_params = profile(model, inputs=(dummy_input,), verbose=False)
 
     total_params = sum(p.numel() for p in model.parameters())
-
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    params_features = sum(p.numel() for p in model.features.parameters())
-    params_discriminator = sum(p.numel() for p in model.discriminator.parameters())
-    params_single_classifier = sum(p.numel() for p in model.classifiers[0].parameters())
-    inference_params = params_features + params_discriminator + params_single_classifier
+    inference_params = total_params
 
     print(f"Model Parameters (Total): {total_params / 1e3:.3f}K")
     print(f"Model Parameters (Trainable): {trainable_params / 1e3:.3f}K")
     print(f"Model Parameters (Inference Active): {inference_params / 1e3:.3f}K")
-    print(f"Model FLOPs (Train): {flops_train} FLOPs")
-    print(f"Model FLOPs (Inference): {flops_infer} FLOPs")
+    print(f"Model FLOPs: {flops} FLOPs")
 
     wandb.log({
-        "Parameters/FLOPs Train": flops_train,
-        "Parameters/FLOPs Inference": flops_infer,
+        "Parameters/FLOPs Train": flops,
+        "Parameters/FLOPs Inference": flops,
         "Parameters/Total Params (K)": total_params / 1e3,
         "Parameters/Trainable Params (K)": trainable_params / 1e3,
         "Parameters/Inference Params (K)": inference_params / 1e3
@@ -296,9 +226,8 @@ def main():
     save_interval = 1
     min_save_epoch = 1
 
-    optimizer_c = optim.Adam(model.classifiers.parameters(), lr=args.lr, weight_decay=args.opt_decay)
-    optimizer_f = optim.Adam(list(model.features.parameters()) + list(model.discriminator.parameters()),
-                             lr=args.lr, weight_decay=args.opt_decay)
+    optimizer_c = optim.Adam(model.classifier.parameters(), lr=args.lr, weight_decay=args.opt_decay)
+    optimizer_f = optim.Adam(model.features.parameters(), lr=args.lr, weight_decay=args.opt_decay)
 
     scheduler_cos_f = CosineAnnealingLR(optimizer_f, T_max=args.anneal_epochs, eta_min=1e-15)
     scheduler_const_f = ConstantLR(optimizer_f, factor=1e-9, total_iters=args.epoch)
@@ -312,25 +241,20 @@ def main():
                                schedulers=[scheduler_warmup_c, scheduler_const_c],
                                milestones=[args.anneal_epochs])
 
-    tau_scheduler = GumbelTauScheduler(initial_tau=args.init_tau, min_tau=args.min_tau, decay_rate=args.tau_decay)
     criterion = nn.CrossEntropyLoss()
 
     wandb.log({
         'Parameters/LR_feature': args.lr,
         'Parameters/LR_classifier': args.lr,
-        'Parameters/Tau': args.init_tau
     }, step=0)
 
     for epoch in range(num_epochs):
-        tau = tau_scheduler.get_tau()
         train_logs, _ = run_epoch(
-            'train', model, train_loaders, criterion, optimizer_c, optimizer_f
-            , epoch, args, tau
+            'train', model, train_loaders, criterion, optimizer_c, optimizer_f, epoch, args
         )
 
         test_logs, test_accs = run_epoch(
-            'test', model, test_loaders, criterion, None, None
-            , epoch, args, 0.1
+            'test', model, test_loaders, criterion, None, None, epoch, args
         )
 
         all_logs = {**train_logs, **test_logs}
@@ -338,7 +262,6 @@ def main():
         current_lr_c = scheduler_c.get_last_lr()[0]
         all_logs['Parameters/LR_feature'] = current_lr_f
         all_logs['Parameters/LR_classifier'] = current_lr_c
-        all_logs['Parameters/Tau'] = tau
 
         wandb.log(all_logs, step=epoch + 1)
 
@@ -347,16 +270,13 @@ def main():
             best_avg_acc = current_avg_acc
             save_path = os.path.join(save_dir, "best_model.pt")
             torch.save(model.state_dict(), save_path)
-            print(
-                f"*** New best model saved to {save_path} (Epoch: {epoch + 1}, Avg Acc: {current_avg_acc:.2f}%) ***")
+            print(f"*** New best model saved to {save_path} (Epoch: {epoch + 1}, Avg Acc: {current_avg_acc:.2f}%) ***")
             wandb.log({"Parameters/Best Avg Accuracy": best_avg_acc}, step=epoch + 1)
 
         if (epoch + 1) % save_interval == 0:
             periodic_save_path = os.path.join(save_dir, f"checkpoint_epoch_{epoch + 1}.pt")
             torch.save(model.state_dict(), periodic_save_path)
-            print(f"--- Periodic checkpoint saved to {periodic_save_path} ---")
 
-        tau_scheduler.step()
         scheduler_c.step()
         scheduler_f.step()
 
